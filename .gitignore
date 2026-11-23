@@ -1,0 +1,5 @@
+.DS_Store
+/Paste++.app/
+/.paste-build.*/
+/history.json
+/favorites.json
