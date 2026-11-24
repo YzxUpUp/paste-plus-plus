@@ -4,12 +4,13 @@
 <dict>
     <key>CFBundleDisplayName</key><string>Paste++</string>
     <key>CFBundleExecutable</key><string>PastePlusPlus</string>
+    <key>CFBundleIconFile</key><string>AppIcon.icns</string>
     <key>CFBundleIdentifier</key><string>local.pasteplusplus.app</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Paste++</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.1</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>1.1.1</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

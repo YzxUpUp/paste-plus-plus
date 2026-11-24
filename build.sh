@@ -7,7 +7,17 @@ stage="$(mktemp -d "$project/.paste-build.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 app="$stage/Paste++.app"
 
-mkdir -p "$app/Contents/MacOS"
+iconset="$stage/AppIcon.iconset"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$iconset"
+for size in 16 32 128 256 512; do
+    double=$((size * 2))
+    sips -z "$size" "$size" Assets/AppIcon.png \
+        --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z "$double" "$double" Assets/AppIcon.png \
+        --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+
 cp Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 xcrun swiftc -swift-version 6 -O -target "$(uname -m)-apple-macosx14.0" \
