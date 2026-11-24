@@ -11,20 +11,43 @@ final class History {
         case favorites
     }
 
-    private static let capacity = 100
+    enum LimitError: Error {
+        case outOfRange
+    }
+
+    static let allowedLimits = 100...9_999
+    private static let limitKey = "historyLimit"
     private let file: URL
     private let favoritesFile: URL
+    private let defaults: UserDefaults
     private var favoritesLoaded = false
+    private(set) var limit: Int
     private(set) var clips: [Clip] = []
     private var favorites: [Clip] = []
 
-    init(file: URL) {
+    init(file: URL, defaults: UserDefaults = .standard) {
         self.file = file
+        self.defaults = defaults
         favoritesFile = file.deletingLastPathComponent().appending(path: "favorites.json")
+        let savedLimit = defaults.integer(forKey: Self.limitKey)
+        limit = Self.allowedLimits.contains(savedLimit) ? savedLimit : Self.allowedLimits.lowerBound
     }
 
+    var remainingCapacity: Int { limit - clips.count }
+
     func load() throws {
-        clips = Array(try read(from: file).prefix(Self.capacity))
+        clips = Array(try read(from: file).prefix(limit))
+    }
+
+    func setLimit(_ newLimit: Int) throws {
+        guard Self.allowedLimits.contains(newLimit) else { throw LimitError.outOfRange }
+        if clips.count > newLimit {
+            let retained = Array(clips.prefix(newLimit))
+            try save(retained, to: file)
+            clips = retained
+        }
+        limit = newLimit
+        defaults.set(newLimit, forKey: Self.limitKey)
     }
 
     func loadFavorites() throws {
@@ -43,7 +66,7 @@ final class History {
     func record(_ text: String, at date: Date = Date()) throws {
         guard !text.isEmpty else { return }
         clips.insert(Clip(text: text, copiedAt: date), at: 0)
-        if clips.count > Self.capacity {
+        if clips.count > limit {
             clips.removeLast()
         }
         try save(clips, to: file)

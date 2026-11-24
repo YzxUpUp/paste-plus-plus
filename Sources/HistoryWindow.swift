@@ -17,6 +17,8 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
         styleMask: [.titled, .closable, .fullSizeContentView],
         backing: .buffered, defer: false
     )
+    private let settingsButton = NSButton(frame: NSRect(x: 0, y: 0, width: 32, height: 26))
+    private let settingsMenu: NSMenu
     private let search = NSTextField()
     private let tabs = NSSegmentedControl(labels: ["历史", "收藏"], trackingMode: .selectOne,
                                           target: nil, action: nil)
@@ -32,8 +34,9 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     var onCancel: (() -> Void)?
     var isVisible: Bool { panel.isVisible }
 
-    init(history: History) {
+    init(history: History, settingsMenu: NSMenu) {
         self.history = history
+        self.settingsMenu = settingsMenu
         super.init()
 
         panel.title = "Paste++"
@@ -45,6 +48,21 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
         panel.standardWindowButton(.closeButton)?.target = self
         panel.standardWindowButton(.closeButton)?.action = #selector(cancel)
         panel.handleKey = { [weak self] in self?.handleKey($0) ?? false }
+
+        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "设置")
+        settingsButton.symbolConfiguration = .init(pointSize: 16, weight: .medium)
+        settingsButton.bezelStyle = .accessoryBarAction
+        settingsButton.toolTip = "设置"
+        settingsButton.setAccessibilityLabel("设置")
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettings)
+        let accessory = NSTitlebarAccessoryViewController()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 48, height: 26))
+        settingsButton.autoresizingMask = [.minYMargin, .maxYMargin]
+        container.addSubview(settingsButton)
+        accessory.view = container
+        accessory.layoutAttribute = .right
+        panel.addTitlebarAccessoryViewController(accessory)
 
         search.placeholderString = "搜索剪贴板历史"
         search.setAccessibilityLabel("搜索剪贴板历史")
@@ -140,6 +158,13 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
         panel.orderOut(nil)
     }
 
+    @objc func showSettings() {
+        guard panel.isVisible, NSApp.modalWindow == nil else { return }
+        let point = NSPoint(x: settingsButton.bounds.maxX - settingsMenu.size.width,
+                            y: settingsButton.bounds.minY)
+        settingsMenu.popUp(positioning: nil, at: point, in: settingsButton)
+    }
+
     func refresh(resetSelection: Bool = false) {
         let previous = table.selectedRow
         let selected = results.indices.contains(previous) ? results[previous] : nil
@@ -161,7 +186,14 @@ final class HistoryWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
             select(resetSelection ? 0 : retained ?? 0)
         }
         message.isHidden = !results.isEmpty
-        footer.stringValue = "\(results.count) 条记录   ·   ↑ ↓ 选择   ·   ↩ 粘贴   ·   Esc 取消"
+        var count = "\(results.count) 条收藏"
+        if selectedTab == .recent {
+            count = "\(history.clips.count)/\(history.limit) 条"
+            if history.remainingCapacity == 0 {
+                count += "，新记录将替换最旧的记录"
+            }
+        }
+        footer.stringValue = "\(count)   ·   ↑ ↓ 选择   ·   ↩ 粘贴   ·   Esc 取消"
         updateFavoriteButton()
     }
 

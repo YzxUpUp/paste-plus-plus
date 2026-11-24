@@ -1,15 +1,44 @@
 import AppKit
-import ApplicationServices
 import Carbon
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private enum Appearance: String, CaseIterable {
+        case system
+        case light
+        case dark
+
+        static let preferenceKey = "interfaceAppearance"
+
+        var title: String {
+            switch self {
+            case .system: "跟随系统"
+            case .light: "明亮"
+            case .dark: "黑暗"
+            }
+        }
+
+        var appKitAppearance: NSAppearance? {
+            switch self {
+            case .system: nil
+            case .light: NSAppearance(named: .aqua)
+            case .dark: NSAppearance(named: .darkAqua)
+            }
+        }
+    }
+
     private let history = History(file: URL.applicationSupportDirectory
         .appending(path: "Paste++/history.json"))
     private let clipboard = Clipboard()
     private let hotKey = HotKey()
+    private var shortcut = Shortcut.load()
+    private var autoPasteEnabled = UserDefaults.standard.object(forKey: "autoPasteEnabled") as? Bool ?? true
+    private var appearance = Appearance(
+        rawValue: UserDefaults.standard.string(forKey: Appearance.preferenceKey) ?? ""
+    ) ?? .system
     private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    private lazy var window = HistoryWindow(history: history)
+    private lazy var settingsMenu = makeSettingsMenu()
+    private lazy var window = HistoryWindow(history: history, settingsMenu: settingsMenu)
     private var lastExternalApp: NSRunningApplication?
     private var pasteTarget: NSRunningApplication?
     private var timer: Timer?
@@ -19,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        NSApp.appearance = appearance.appKitAppearance
         lastExternalApp = frontmostExternalApp
         configureStatusItem()
 
@@ -35,9 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showNotice("收藏读取失败。")
         }
 
-        hotKeyStatus = hotKey.register { [weak self] in self?.openHistory() }
+        hotKeyStatus = registerShortcut(shortcut)
         if hotKeyStatus != noErr {
-            showNotice("无法注册 ⌘⇧V。可以从菜单栏打开历史记录。")
+            showNotice("无法注册 \(shortcut.displayName)。可以从菜单栏打开历史记录。")
         }
 
         let poll = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -57,8 +87,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let frontmostExternalApp {
             lastExternalApp = frontmostExternalApp
         }
-        menu.items.first(where: { $0.tag == 1 })?.isHidden = hotKeyStatus == noErr
-        menu.items.first(where: { $0.tag == 2 })?.isHidden = AXIsProcessTrusted()
+        if let unavailable = menu.items.first(where: { $0.tag == 1 }) {
+            unavailable.title = "快捷键 \(shortcut.displayName) 不可用"
+            unavailable.isHidden = hotKeyStatus == noErr
+        }
+        if let autoPaste = menu.items.first(where: { $0.tag == 2 }) {
+            let canPost = CGPreflightPostEventAccess()
+            if autoPasteEnabled && canPost {
+                autoPaste.title = "关闭自动粘贴"
+            } else {
+                autoPaste.title = canPost ? "启用自动粘贴" : "启用自动粘贴…"
+            }
+        }
         menu.items.first(where: { $0.tag == 3 })?.isHidden = !clipboard.readDenied
     }
 
@@ -71,25 +111,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(menuItem("打开历史记录", #selector(openHistory)))
-        let hotKeyNote = menuItem("快捷键 ⌘⇧V 不可用", nil)
+        let hotKeyNote = menuItem("", nil)
         hotKeyNote.tag = 1
         menu.addItem(hotKeyNote)
-        let access = menuItem("启用自动粘贴…", #selector(requestPasteAccess))
-        access.tag = 2
-        menu.addItem(access)
         let readAccess = menuItem("剪贴板读取已关闭", nil)
         readAccess.tag = 3
         menu.addItem(readAccess)
         menu.addItem(.separator())
-        menu.addItem(menuItem("清空历史记录…", #selector(clearHistory)))
+        menu.addItem(menuItem("设置…", #selector(openSettings)))
         menu.addItem(menuItem("退出 Paste++", #selector(quit)))
         status.menu = menu
+    }
+
+    private func makeSettingsMenu() -> NSMenu {
+        let menu = NSMenu(title: "设置")
+        menu.delegate = self
+        menu.addItem(menuItem("快捷键…", #selector(configureShortcut)))
+        menu.addItem(appearanceMenuItem())
+        menu.addItem(menuItem("历史记录上限…", #selector(configureHistoryLimit)))
+        let access = menuItem("启用自动粘贴…", #selector(toggleAutoPaste))
+        access.tag = 2
+        menu.addItem(access)
+        menu.addItem(.separator())
+        menu.addItem(menuItem("清空历史记录…", #selector(clearHistory)))
+        return menu
     }
 
     private func menuItem(_ title: String, _ action: Selector?) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         return item
+    }
+
+    private func appearanceMenuItem() -> NSMenuItem {
+        let submenu = NSMenu(title: "外观")
+        for option in Appearance.allCases {
+            let item = menuItem(option.title, #selector(selectAppearance(_:)))
+            item.representedObject = option.rawValue
+            item.state = option == appearance ? .on : .off
+            submenu.addItem(item)
+        }
+        let item = menuItem("外观", nil)
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func selectAppearance(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String,
+              let selected = Appearance(rawValue: value) else { return }
+        appearance = selected
+        NSApp.appearance = selected.appKitAppearance
+        UserDefaults.standard.set(selected.rawValue, forKey: Appearance.preferenceKey)
+        for item in sender.menu?.items ?? [] {
+            item.state = item === sender ? .on : .off
+        }
     }
 
     private var frontmostExternalApp: NSRunningApplication? {
@@ -99,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openHistory() {
+        guard NSApp.modalWindow == nil else { return }
         notice.performClose(nil)
         if window.isVisible && NSApp.isActive {
             window.focus()
@@ -108,6 +184,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastExternalApp = pasteTarget
         pollClipboard()
         window.show()
+    }
+
+    @objc private func openSettings() {
+        guard NSApp.modalWindow == nil else { return }
+        openHistory()
+        DispatchQueue.main.async { [weak self] in self?.window.showSettings() }
     }
 
     private func pollClipboard() {
@@ -120,6 +202,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         if window.isVisible { window.refresh() }
+    }
+
+    @objc private func configureHistoryLimit() {
+        let previousApp = frontmostExternalApp ?? pasteTarget ?? lastExternalApp
+        NSApp.activate()
+        defer { restoreFocus(afterSettings: previousApp) }
+
+        let range = History.allowedLimits
+        let rangeDescription = "\(range.lowerBound) 到 \(range.upperBound)"
+        let alert = NSAlert()
+        alert.messageText = "历史记录上限"
+        alert.informativeText = "设置要保留的历史条数，范围为 \(rangeDescription)。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1B}"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        input.stringValue = String(history.limit)
+        input.setAccessibilityLabel("历史记录上限")
+        alert.accessoryView = input
+
+        while true {
+            alert.layout()
+            alert.window.initialFirstResponder = input
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let limit = Int(text), range.contains(limit) else {
+                alert.informativeText = "请输入 \(rangeDescription) 之间的整数。"
+                continue
+            }
+            guard limit != history.limit else { return }
+            if history.clips.count > limit {
+                let confirm = NSAlert()
+                confirm.messageText = "降低历史记录上限？"
+                confirm.informativeText = "将保留最近 \(limit) 条历史，超出的旧记录会被删除。收藏会保留。"
+                confirm.addButton(withTitle: "取消").keyEquivalent = "\u{1B}"
+                confirm.addButton(withTitle: "降低上限").hasDestructiveAction = true
+                guard confirm.runModal() == .alertSecondButtonReturn else { continue }
+            }
+            do {
+                try history.setLimit(limit)
+                window.refresh()
+            } catch {
+                showNotice("保存历史记录上限失败。请重试。")
+            }
+            return
+        }
+    }
+
+    private func registerShortcut(_ candidate: Shortcut) -> OSStatus {
+        hotKey.register(candidate) { [weak self] in self?.openHistory() }
+    }
+
+    @objc private func configureShortcut() {
+        let previousApp = frontmostExternalApp ?? pasteTarget ?? lastExternalApp
+        NSApp.activate()
+        defer { restoreFocus(afterSettings: previousApp) }
+
+        ShortcutSettings.present(current: shortcut) { candidate in
+            let result = registerShortcut(candidate)
+            if result == noErr {
+                shortcut = candidate
+                hotKeyStatus = noErr
+                candidate.save()
+            }
+            return result
+        }
+    }
+
+    private func restoreFocus(afterSettings previousApp: NSRunningApplication?) {
+        if window.isVisible {
+            window.focus()
+        } else {
+            pasteTarget = previousApp
+            returnToOriginalApp()
+        }
     }
 
     @objc private func clearHistory() {
@@ -148,9 +304,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         returnToOriginalApp()
     }
 
-    @objc private func requestPasteAccess() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+    @objc private func toggleAutoPaste() {
+        let canPost = CGPreflightPostEventAccess()
+        autoPasteEnabled = !(autoPasteEnabled && canPost)
+        UserDefaults.standard.set(autoPasteEnabled, forKey: "autoPasteEnabled")
+        guard autoPasteEnabled, !canPost, !CGRequestPostEventAccess() else { return }
+
+        if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(settings)
+        }
     }
 
     @objc private func quit() {
@@ -161,11 +323,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func returnToOriginalApp() -> NSRunningApplication? {
         let target = pasteTarget
         pasteTarget = nil
-        window.hide()
-        if let target, !target.isTerminated, !target.isActive {
+        if let target, !target.isTerminated,
+           NSWorkspace.shared.frontmostApplication?.processIdentifier != target.processIdentifier {
             NSApp.yieldActivation(to: target)
             target.activate(from: NSRunningApplication.current)
         }
+        window.hide()
         return target
     }
 
@@ -177,18 +340,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showNotice("写入剪贴板失败。请重新选择记录。")
             return
         }
-        guard AXIsProcessTrusted() else {
-            showNotice("已复制，可按 ⌘V。通过菜单栏启用自动粘贴。")
+        guard autoPasteEnabled else { return }
+        guard CGPreflightPostEventAccess() else {
+            showNotice("已复制，可按 ⌘V。自动粘贴需要在系统设置中允许 Paste++ 使用辅助功能。")
             return
         }
         guard let target, !target.isTerminated else {
             showNotice("已复制。请切换到目标窗口并按 ⌘V。")
             return
         }
-        pasteWhenActive(target, change: change, deadline: .now() + 1)
+        pasteWhenActive(target, change: change, deadline: .now() + 1.5)
     }
 
-    private func pasteWhenActive(_ target: NSRunningApplication, change: Int, deadline: DispatchTime) {
+    private func pasteWhenActive(_ target: NSRunningApplication, change: Int, deadline: DispatchTime,
+                                 focusSettled: Bool = false) {
+        guard autoPasteEnabled, !window.isVisible else { return }
         guard clipboard.changeCount == change else {
             showNotice("剪贴板已更新。请重新选择要粘贴的记录。")
             return
@@ -197,15 +363,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showNotice("已复制。请切换到目标窗口并按 ⌘V。")
             return
         }
-        guard target.isActive, NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.pasteWhenActive(target, change: change, deadline: deadline)
+        let targetIsFrontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
+        guard targetIsFrontmost && focusSettled else {
+            let delay: DispatchTimeInterval = targetIsFrontmost ? .milliseconds(100) : .milliseconds(50)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.pasteWhenActive(target, change: change, deadline: deadline, focusSettled: targetIsFrontmost)
             }
             return
         }
         guard CGPreflightPostEventAccess(),
-              let down = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
+              let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
         else {
             showNotice("已复制，可按 ⌘V。请确认系统辅助功能权限。")
             return
