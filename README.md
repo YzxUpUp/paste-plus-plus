@@ -23,6 +23,8 @@ open 'Paste++.app'
 
 脚本会为当前电脑的架构构建应用。启动后，从 macOS 菜单栏打开 Paste++。
 
+有 Developer ID Application 签名证书时，可运行 `PASTEPLUSPLUS_SIGN_IDENTITY='Developer ID Application: …' ./build.sh`。连续版本使用同一开发团队的签名和相同的应用标识，macOS 可以沿用辅助功能授权。从临时签名切换到证书签名时，需要为新签名授权一次。
+
 ### 使用方法
 
 1. 复制文本后，按 **⌘⇧V** 打开查询窗口，也可以从菜单栏选择「打开历史记录」。
@@ -31,7 +33,7 @@ open 'Paste++.app'
 
 点击查询窗口右上角的齿轮，或在菜单栏选择「设置…」，可以自定义快捷键、切换外观、调整历史记录上限或清空历史。外观默认跟随系统，历史记录上限可设置为 100 到 9999 条。
 
-首次读取剪贴板时，macOS 可能会弹出权限提示。要让 Paste++ 自动粘贴到原应用，在齿轮菜单中选择「启用自动粘贴」并授予辅助功能权限。可在同一个菜单点「关闭自动粘贴」，之后选中记录时自行按 **⌘V** 粘贴。更新或重新构建后，如果自动粘贴不可用，可在「系统设置 → 隐私与安全性 → 辅助功能」移除旧的 Paste++ 条目。添加当前的 `Paste++.app` 并授权后，重新打开应用。
+首次读取剪贴板时，macOS 可能会弹出权限提示。要让 Paste++ 自动粘贴到原应用，在齿轮菜单中选择「授权自动粘贴…」，并在「系统设置 → 隐私与安全性 → 辅助功能」允许 Paste++。应用会检测授权并恢复自动粘贴，必要时自动重新打开。可在同一个菜单点「关闭自动粘贴」，之后选中记录时自行按 **⌘V** 粘贴。临时签名的版本更新后如果需要重新授权，请移除旧的辅助功能条目并添加当前的 `Paste++.app`。
 
 历史和收藏保存在本机的 `~/Library/Application Support/Paste++/`。应用会跳过剪贴板上明确标记为保密的内容。
 
@@ -60,6 +62,8 @@ open 'Paste++.app'
 
 The script builds the app for your Mac's architecture. Once it launches, look for Paste++ in the menu bar.
 
+If you have a Developer ID Application signing identity, build with `PASTEPLUSPLUS_SIGN_IDENTITY='Developer ID Application: …' ./build.sh`. macOS can retain Accessibility permission across builds signed by the same development team with the same bundle identifier. Switching from ad-hoc signing requires a fresh grant.
+
 ### Use Paste++
 
 1. After copying text, press **⌘⇧V** to open the search window. You can also select **Open History** (「打开历史记录」) from the menu bar.
@@ -68,7 +72,7 @@ The script builds the app for your Mac's architecture. Once it launches, look fo
 
 Click the gear in the upper-right corner of the search window, or choose **Settings** (「设置…」) from the menu bar, to customize the shortcut, change the appearance, set the history limit, or clear history. Appearance follows the system by default. You can set the history limit to any whole number from 100 to 9,999.
 
-macOS may ask for clipboard access the first time Paste++ reads it. To paste into the previous app automatically, choose **Enable Auto-Paste** (「启用自动粘贴」) from the gear menu and grant Accessibility permission. Choose **Disable Auto-Paste** (「关闭自动粘贴」) to paste manually with **⌘V** after selecting an entry. If auto-paste stops working after an update or rebuild, remove the old Paste++ entry under **System Settings → Privacy & Security → Accessibility**, add the current `Paste++.app`, and reopen it.
+macOS may ask for clipboard access the first time Paste++ reads it. To paste into the previous app automatically, choose **Authorize Auto-Paste** (「授权自动粘贴…」) from the gear menu and allow Paste++ under **System Settings → Privacy & Security → Accessibility**. Paste++ checks for the grant and reopens itself if macOS requires a fresh process. Choose **Disable Auto-Paste** (「关闭自动粘贴」) to paste manually with **⌘V** after selecting an entry. If an ad-hoc signed update needs a fresh grant, remove the old Accessibility entry and add the current `Paste++.app`.
 
 History and favorites are stored locally in `~/Library/Application Support/Paste++/`. Paste++ skips clipboard items explicitly marked as confidential.
 

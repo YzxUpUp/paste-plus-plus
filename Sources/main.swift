@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon
 
 @MainActor
@@ -36,12 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var appearance = Appearance(
         rawValue: UserDefaults.standard.string(forKey: Appearance.preferenceKey) ?? ""
     ) ?? .system
-    private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private var displayedHistoryCount: Int?
     private lazy var settingsMenu = makeSettingsMenu()
     private lazy var window = HistoryWindow(history: history, settingsMenu: settingsMenu)
     private var lastExternalApp: NSRunningApplication?
     private var pasteTarget: NSRunningApplication?
     private var timer: Timer?
+    private var autoPasteAuthorizationTimer: Timer?
     private var hotKeyStatus: OSStatus = noErr
     private let notice = NSPopover()
     private var noticeTimeout: DispatchWorkItem?
@@ -59,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             showNotice("历史记录读取失败。")
         }
+        updateStatusIcon()
         do {
             try history.loadFavorites()
         } catch {
@@ -79,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        autoPasteAuthorizationTimer?.invalidate()
         hotKey.unregister()
     }
 
@@ -92,22 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             unavailable.isHidden = hotKeyStatus == noErr
         }
         if let autoPaste = menu.items.first(where: { $0.tag == 2 }) {
-            let canPost = CGPreflightPostEventAccess()
-            if autoPasteEnabled && canPost {
-                autoPaste.title = "关闭自动粘贴"
-            } else {
-                autoPaste.title = canPost ? "启用自动粘贴" : "启用自动粘贴…"
-            }
+            autoPaste.title = autoPasteEnabled ? "关闭自动粘贴" : "启用自动粘贴"
         }
         menu.items.first(where: { $0.tag == 3 })?.isHidden = !clipboard.readDenied
+        if let authorization = menu.items.first(where: { $0.tag == 4 }) {
+            authorization.isHidden = !autoPasteEnabled || CGPreflightPostEventAccess()
+        }
     }
 
     private func configureStatusItem() {
-        if let button = status.button {
-            button.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "Paste++")
-            button.toolTip = "Paste++"
-        }
-
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(menuItem("打开历史记录", #selector(openHistory)))
@@ -123,15 +121,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.menu = menu
     }
 
+    private func updateStatusIcon() {
+        let count = history.clips.count
+        guard count != displayedHistoryCount, let button = status.button else { return }
+        button.image = HistoryStatusIcon.make(count: count)
+        let description = "Paste++，\(count) 条历史记录"
+        button.toolTip = description
+        button.setAccessibilityLabel(description)
+        displayedHistoryCount = count
+    }
+
     private func makeSettingsMenu() -> NSMenu {
         let menu = NSMenu(title: "设置")
         menu.delegate = self
         menu.addItem(menuItem("快捷键…", #selector(configureShortcut)))
         menu.addItem(appearanceMenuItem())
         menu.addItem(menuItem("历史记录上限…", #selector(configureHistoryLimit)))
-        let access = menuItem("启用自动粘贴…", #selector(toggleAutoPaste))
+        let access = menuItem("启用自动粘贴", #selector(toggleAutoPaste))
         access.tag = 2
         menu.addItem(access)
+        let authorization = menuItem("授权自动粘贴…", #selector(authorizeAutoPaste))
+        authorization.tag = 4
+        menu.addItem(authorization)
         menu.addItem(.separator())
         menu.addItem(menuItem("清空历史记录…", #selector(clearHistory)))
         return menu
@@ -201,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 showNotice("历史记录写入失败。当前记录暂存在内存中。")
             }
         }
+        updateStatusIcon()
         if window.isVisible { window.refresh() }
     }
 
@@ -241,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             do {
                 try history.setLimit(limit)
+                updateStatusIcon()
                 window.refresh()
             } catch {
                 showNotice("保存历史记录上限失败。请重试。")
@@ -296,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 try history.clear()
                 clipboard.skipCurrentContents()
+                updateStatusIcon()
                 window.refresh(resetSelection: true)
             } catch {
                 showNotice("清空失败。历史记录仍然保留。")
@@ -305,13 +319,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleAutoPaste() {
-        let canPost = CGPreflightPostEventAccess()
-        autoPasteEnabled = !(autoPasteEnabled && canPost)
+        autoPasteEnabled.toggle()
         UserDefaults.standard.set(autoPasteEnabled, forKey: "autoPasteEnabled")
-        guard autoPasteEnabled, !canPost, !CGRequestPostEventAccess() else { return }
+        if autoPasteEnabled {
+            authorizeAutoPaste()
+        } else {
+            stopWatchingAutoPasteAuthorization()
+        }
+    }
 
-        if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+    @objc private func authorizeAutoPaste() {
+        guard autoPasteEnabled, !CGPreflightPostEventAccess() else { return }
+        if !AXIsProcessTrusted(), !CGRequestPostEventAccess(),
+           let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(settings)
+        }
+        stopWatchingAutoPasteAuthorization()
+        let deadline = ProcessInfo.processInfo.systemUptime + 300
+        let watch = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshAutoPasteAuthorization(until: deadline) }
+        }
+        autoPasteAuthorizationTimer = watch
+        RunLoop.main.add(watch, forMode: .common)
+    }
+
+    private func refreshAutoPasteAuthorization(until deadline: TimeInterval) {
+        if CGPreflightPostEventAccess() || ProcessInfo.processInfo.systemUptime >= deadline {
+            stopWatchingAutoPasteAuthorization()
+            return
+        }
+        guard AXIsProcessTrusted(), NSApp.modalWindow == nil else { return }
+        stopWatchingAutoPasteAuthorization()
+        relaunchAfterAuthorization()
+    }
+
+    private func stopWatchingAutoPasteAuthorization() {
+        autoPasteAuthorizationTimer?.invalidate()
+        autoPasteAuthorizationTimer = nil
+    }
+
+    private func relaunchAfterAuthorization() {
+        // A fresh process can pick up a grant when Core Graphics still reports the old result.
+        let launcher = Process()
+        launcher.executableURL = URL(filePath: "/bin/sh")
+        launcher.arguments = ["-c", """
+            for attempt in 1 2 3 4 5; do
+                if ! kill -0 "$1" 2>/dev/null && /usr/bin/open -g -a "$2"; then
+                    exit 0
+                fi
+                /bin/sleep 1
+            done
+            """, "pasteplusplus-relaunch", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundlePath]
+        do {
+            try launcher.run()
+            NSApp.terminate(nil)
+        } catch {
+            showNotice("辅助功能已授权。请重新打开 Paste++，让自动粘贴生效。")
         }
     }
 
@@ -342,7 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         guard autoPasteEnabled else { return }
         guard CGPreflightPostEventAccess() else {
-            showNotice("已复制，可按 ⌘V。自动粘贴需要在系统设置中允许 Paste++ 使用辅助功能。")
+            showNotice("已复制，可按 ⌘V。请在 Paste++ 设置中选择「授权自动粘贴…」。")
             return
         }
         guard let target, !target.isTerminated else {

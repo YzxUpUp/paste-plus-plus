@@ -22,7 +22,7 @@ cp Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 xcrun swiftc -swift-version 6 -O -target "$(uname -m)-apple-macosx14.0" \
     Sources/*.swift -o "$app/Contents/MacOS/PastePlusPlus"
-codesign --force --sign - "$app"
+codesign --force --sign "${PASTEPLUSPLUS_SIGN_IDENTITY:--}" "$app"
 codesign --verify --strict "$app"
 
 if [[ -e "$project/Paste++.app" ]]; then
